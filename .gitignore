@@ -1,0 +1,40 @@
+# Environments
+.env
+.venv
+env/
+venv/
+ENV/
+env.bak/
+venv.bak/
+
+# Byte-compiled / optimized / DLL files
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Distribution / packaging
+dist/
+build/
+*.egg-info/
+
+# mypy
+.mypy_cache/
+.dmypy.json
+dmypy.json
+
+# Test coverage
+.coverage
+htmlcov/
+.pytest_cache/
+
+# macOS
+.DS_Store
+
+# ruff
+.ruff_cache/
+
+# Editor files
+.vscode/
+.idea/
+
+.kilo/plans/

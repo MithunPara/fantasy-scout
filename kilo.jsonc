@@ -1,0 +1,22 @@
+{
+  "$schema": "https://app.kilo.ai/config.json",
+  "instructions": [
+    ".kilo/rules/architecture.md",
+    ".kilo/rules/security.md",
+    ".kilo/rules/testing.md",
+  ],
+  "compaction": {
+    "auto": true,
+    "threshold_percent": 50, // condense when the context window reaches 50%
+    "prune": true, // prune the old tool outputs
+    "tail_turns": 1, // only latest user turn kept after the context is condensed
+  },
+  "tool_output": {
+    "max_lines": 500, // default 2000
+    "max_bytes": 10240, // default 51200
+  },
+  "indexing": {
+    "enabled": true,
+    "model": "gemini-embedding-001",
+  },
+}
