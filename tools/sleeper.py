@@ -1,5 +1,8 @@
 from typing import TypedDict, NotRequired
 import httpx
+import time
+import asyncio
+import json
 from langchain_core.tools import tool
 from pathlib import Path
 
@@ -46,6 +49,30 @@ class PlayersCache(TypedDict):
 # --------------------------------------------------------
 # Cache
 # --------------------------------------------------------
+
+# Manual cache (for now)
+_players_cache: PlayersCache = {"fetched_at": 0.0, "data": None}
+
+# Cache functions synchronous because disk file reads/writes cannot be awaited
+
+# Check if the cache is fresh still (under 6 hours since last API pull)
+def _is_fresh() -> bool:
+    age = time.time() - _players_cache["fetched_at"]
+    return _players_cache["data"] is not None and age < PLAYERS_TTL_SECONDS
+
+def _load_disk_cache() -> None:
+    try:
+        # loads to deserialize JSON into Python object. loads() expects a string unlike load(), pathlib read_text converts to in-memory string instead of file stream
+        payload = json.loads(PLAYERS_CACHE_FILE.read_text())
+        # Update the in-memory cache
+        _players_cache["fetched_at"] = payload["fetched_at"]
+        _players_cache["data"] = payload["data"]
+    except (OSError, ValueError, KeyError):
+    # OSError covers errors like FileNotFound, ValueError will cover invalid JSON or wrong encoding, KeyError in case
+    # code accesses missing dict key
+        pass # Just treat cache as empty
+
+# def _save_disk_cache() -> None:
 
 
 
