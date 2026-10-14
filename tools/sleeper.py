@@ -1,10 +1,14 @@
-from typing import TypedDict, NotRequired
+from typing import TypedDict, NotRequired, Any
 import httpx
 import time
 import asyncio
 import json
+import logging
 from langchain_core.tools import tool
 from pathlib import Path
+
+logger = logging.getLogger(__name__)
+_players_lock = asyncio.Lock()
 
 # --------------------------------------------------------
 # Constants
@@ -60,30 +64,45 @@ def _is_fresh() -> bool:
     age = time.time() - _players_cache["fetched_at"]
     return _players_cache["data"] is not None and age < PLAYERS_TTL_SECONDS
 
-def _load_disk_cache() -> None:
+def _read_disk_cache() -> None:
     try:
         # loads to deserialize JSON into Python object. loads() expects a string unlike load(), pathlib read_text converts to in-memory string instead of file stream
-        payload = json.loads(PLAYERS_CACHE_FILE.read_text())
-        # Update the in-memory cache
-        _players_cache["fetched_at"] = payload["fetched_at"]
-        _players_cache["data"] = payload["data"]
-    except (OSError, ValueError, KeyError):
-    # OSError covers errors like FileNotFound, ValueError will cover invalid JSON or wrong encoding, KeyError in case
-    # code accesses missing dict key
-        pass # Just treat cache as empty
+        return json.loads(PLAYERS_CACHE_FILE.read_text(encoding="utf-8"))
+    except FileNotFoundError:
+        pass # Will occur in the first run where cache isn't set yet
+    except (OSError, ValueError, TypeError) as e:
+    # OSError covers errors like FileNotFound, ValueError will cover invalid JSON or wrong encoding
+        logger.warning("Unreadable disk cache: %s", type(e).__name__)
 
-# def _save_disk_cache() -> None:
+def _save_disk_cache() -> None:
+    try:
+        # Create the parent cache folder if needed to store temp cache file
+        PLAYERS_CACHE_FILE.parent.mkdir(parents=True, exist_ok=True)
+        tmp = PLAYERS_CACHE_FILE.with_suffix(".tmp")
+        # First write the JSON into temp file then replace main cache file so if any issues occur when writing to temp file,
+        # original cache will be unaffected
+        tmp.write_text(json.dumps(_players_cache), encoding="utf-8")
+        tmp.replace(PLAYERS_CACHE_FILE)
+    except (OSError, ValueError, TypeError) as e:
+        logger.warning("Disk cache write failed: %s", type(e).__name__)
 
-
+async def _get_players() -> SleeperResult:
+    # Use a lock so concurrent tool calls will wait instead of potentially calling API multiple times
+    async with _players_lock:
+        if _players_cache["data"] is None:
+            # Use asyncio.to_thread to make synchronous function awaitable
+            loaded_cache = await asyncio.to_thread(_read_disk_cache)
+            if loaded_cache is not None:
+                _players_cache.update(loaded_cache)
 
 # --------------------------------------------------------
 # HTTP Request
 # --------------------------------------------------------
 
-async def _get(url_path: str) -> SleeperResult:
+async def _get(url_path: str, params: dict[str, Any]) -> SleeperResult:
     try:
         async with httpx.AsyncClient(timeout=10.0) as client:
-            response = await client.get(f"{BASE_URL}/{url_path}")
+            response = await client.get(f"{BASE_URL}/{url_path}", params=params)
             response.raise_for_status() # Raise exception for 4xx and 5xx errors
             return {"data": response.json(), "error": None}
     # Exception if client error when retrieving API result
