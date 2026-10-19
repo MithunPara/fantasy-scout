@@ -25,11 +25,15 @@ PLAYERS_CACHE_FILE = Path(".cache/sleeper_players.json")
 # Types
 # --------------------------------------------------------
 
-class SleeperResult(TypedDict):
-    data: list[dict] | None
+# class SleeperResult(TypedDict):
+#     data: list[dict] | None
+#     error: str | None
+
+class RawResult(TypedDict):
+    data: Any
     error: str | None
 
-# Fields to retrieve from player endpoint
+# Fields to retrieve from Sleeper player endpoint
 class SleeperPlayerRaw(TypedDict):
     player_id: str
     full_name: str
@@ -46,9 +50,28 @@ class SleeperPlayerRaw(TypedDict):
     age: NotRequired[int | None]
     years_exp: NotRequired[int | None]
 
+# Fields we store
+class ParsedPlayer(TypedDict):
+    player_id: str
+    full_name: str
+    search_name: str
+    position: str | None
+    team: str | None
+    status: str | None
+    injury_status: str | None
+    injury_notes: str | None
+    practice_participation: str | None
+    age: int | None
+    years_exp: int | None
+
+class PlayersResult(TypedDict):
+    data: dict[str, ParsedPlayer] | None
+    error: str | None
+
+# If ParsedPlayer shape changes, need to delete the cache file so the old format is not used
 class PlayersCache(TypedDict):
     fetched_at: float
-    data: dict[str, SleeperPlayerRaw] | None
+    data: dict[str, ParsedPlayer] | None
 
 # --------------------------------------------------------
 # Cache
@@ -64,14 +87,18 @@ def _is_fresh() -> bool:
     age = time.time() - _players_cache["fetched_at"]
     return _players_cache["data"] is not None and age < PLAYERS_TTL_SECONDS
 
-def _read_disk_cache() -> None:
+def _read_disk_cache() -> PlayersCache | None:
     try:
         # loads to deserialize JSON into Python object. loads() expects a string unlike load(), pathlib read_text converts to in-memory string instead of file stream
-        return json.loads(PLAYERS_CACHE_FILE.read_text(encoding="utf-8"))
+        payload = json.loads(PLAYERS_CACHE_FILE.read_text(encoding="utf-8"))
+
+        if not isinstance(payload, dict) or not isinstance(payload.get("data"), dict):
+            return None
+        return {"fetched_at": float(payload["fetched_at"]), "data": payload["data"]}
     except FileNotFoundError:
         pass # Will occur in the first run where cache isn't set yet
-    except (OSError, ValueError, TypeError) as e:
-    # OSError covers errors like FileNotFound, ValueError will cover invalid JSON or wrong encoding
+    except (OSError, ValueError, TypeError, KeyError) as e:
+    # ValueError will cover invalid JSON or wrong encoding
         logger.warning("Unreadable disk cache: %s", type(e).__name__)
 
 def _save_disk_cache() -> None:
@@ -86,7 +113,9 @@ def _save_disk_cache() -> None:
     except (OSError, ValueError, TypeError) as e:
         logger.warning("Disk cache write failed: %s", type(e).__name__)
 
-async def _get_players() -> SleeperResult:
+# If memory cache is empty, load into it and return the cached data if it is fresh (within 6 hours). Otherwise, fetch players API endpoint and return. 
+# If there is an error fetching, return stale cached data. If cache is empty and error fetching, return the API result error. 
+async def _get_players() -> PlayersResult:
     # Use a lock so concurrent tool calls will wait instead of potentially calling API multiple times
     async with _players_lock:
         if _players_cache["data"] is None:
@@ -94,12 +123,27 @@ async def _get_players() -> SleeperResult:
             loaded_cache = await asyncio.to_thread(_read_disk_cache)
             if loaded_cache is not None:
                 _players_cache.update(loaded_cache)
+        if _is_fresh():
+            return {"data": _players_cache["data"], "error": None}
+
+        api_result = await _get("players/nfl", params={"active": "true"})
+        if api_result["error"] is None and isinstance(api_result["data"], dict):
+            parsed = _parse_players(api_result["data"])
+            _players_cache["data"] = parsed
+            # Update in-memory cache with current fetch time
+            _players_cache["fetched_at"] = time.time()
+            await asyncio.to_thread(_save_disk_cache)
+            return {"data": parsed, "error": None}
+
+        if _players_cache["data"] is not None:
+            return {"data": _players_cache["data"], "error": None}
+        return {"data": None, "error": api_result["error"] or "Unexpected players response shape"}
 
 # --------------------------------------------------------
 # HTTP Request
 # --------------------------------------------------------
 
-async def _get(url_path: str, params: dict[str, Any]) -> SleeperResult:
+async def _get(url_path: str, params: dict[str, Any] | None = None) -> RawResult:
     try:
         async with httpx.AsyncClient(timeout=10.0) as client:
             response = await client.get(f"{BASE_URL}/{url_path}", params=params)
@@ -116,14 +160,70 @@ async def _get(url_path: str, params: dict[str, Any]) -> SleeperResult:
 # Parsers
 # --------------------------------------------------------
 
+# Convert name to lower case with no spaces
+def _normalize_name(name: str) -> str:
+    return "".join(c for c in name.lower() if c.isalnum())
 
+def _parse_player(raw: SleeperPlayerRaw) -> ParsedPlayer | None:
+    player_id = raw.get("player_id")
+
+    full_name = raw.get("full_name") or " ".join(
+        part for part in (raw.get("first_name"), raw.get("last_name")) if part
+    )
+
+    # No player id or name can be extracted from the player record
+    if not player_id or not full_name:
+        return None
+
+    return {
+        "player_id": player_id,
+        "full_name": full_name,
+        "search_name": raw.get("search_full_name") or _normalize_name(full_name),
+        "position": raw.get("position"),
+        "team": raw.get("team"),
+        "status": raw.get("status"),
+        "injury_status": raw.get("injury_status"),
+        "injury_notes": raw.get("injury_notes"),
+        "practice_participation": raw.get("practice_participation"),
+        "age": raw.get("age"),
+        "years_exp": raw.get("years_exp"),
+    }
+
+def _parse_players(raw_player_map: dict[str, SleeperPlayerRaw]) -> dict[str, ParsedPlayer]:
+    return {
+        player_id: parsed
+        for player_id, raw in raw_player_map.items()
+        if (parsed := _parse_player(raw)) is not None
+    }
+
+def _filter_players(
+    players_map: dict[str, ParsedPlayer],
+    team: str | None,
+    position: str | None,
+    injured_only: bool,
+    # Add a limit parameter on returned players?
+) -> list[ParsedPlayer]:
+    team = team.upper() if team else None
+    position = position.upper() if position else None
+
+    player_matches: list[ParsedPlayer] = []
+    for player in players_map.values():
+        if team and player["team"] != team:
+            continue
+        if position and player["position"] != position: 
+            continue
+        if injured_only and not player["injury_status"]:
+            continue
+        player_matches.append(player)
+
+    return player_matches
 # --------------------------------------------------------
 # Public Tools
 # --------------------------------------------------------
 
 @tool
-async def get_nfl_state() -> SleeperResult:
+async def get_nfl_state() -> RawResult:
     return await _get("state/nfl")
 
 @tool
-async def get_injured_players() -> SleeperResult:
+async def get_injured_players() -> PlayersResult:
