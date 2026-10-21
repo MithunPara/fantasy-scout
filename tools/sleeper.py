@@ -276,7 +276,7 @@ async def get_injured_players(
     return {"data": players, "error": None}
 
 @tool 
-async def find_player(name: str) -> PlayersListResult:
+async def find_player(name: str, limit: int = 15) -> PlayersListResult:
     """Search NFL players by name (case-insensitive, partial match).
 
     Exact name matches are listed first. Names can be ambiguous, so check
@@ -284,6 +284,7 @@ async def find_player(name: str) -> PlayersListResult:
 
     Args:
         name: Full or partial player name, e.g. 'Ja'Marr Chase' or 'chase'.
+        limit: Maximum players to return (default 15).
 
     Returns:
         Same shape as get_injured_players.
@@ -304,7 +305,7 @@ async def find_player(name: str) -> PlayersListResult:
             exact_matches.append(player)
         elif normalized_name in player["search_name"]:
             partial_matches.append(player)
-    return {"data": (exact_matches + partial_matches), "error": None}
+    return {"data": (exact_matches + partial_matches)[:limit], "error": None}
 
 @tool
 async def get_trending_players(
