@@ -236,6 +236,16 @@ def _filter_players(
 
 @tool
 async def get_nfl_state() -> RawResult:
+    """Get the current NFL season state.
+
+    Use this first when you need to know what "this week" or "this season" is.
+    
+    Returns:
+        dict with keys 'data' and 'error'. On success 'data' is a dict with
+        'season' (str), 'week' (int), 'season_type' (str: 'pre', 'regular'
+        or 'post') and 'display_week' (int); 'error' is None.
+        On failure 'data' is None and 'error' is a message.
+    """
     return await _get("state/nfl")
 
 @tool
@@ -243,8 +253,21 @@ async def get_injured_players(
     team: str | None = None,
     position: str | None = None
 ) -> PlayersListResult:
+    """List NFL players who currently have an injury designation.
 
-    
+    Injury data is a periodic snapshot and may lag official reports.
+
+    Args:
+        team: Optional team abbreviation such as 'KC' or 'BUF'.
+        position: Optional position such as 'QB', 'RB', 'WR', 'TE'.
+
+    Returns:
+        dict with 'data' and 'error'. On success 'data' is a list of players
+        with keys 'player_id', 'full_name', 'position', 'team', 'status',
+        'injury_status', 'injury_notes', 'practice_participation', 'age',
+        'years_exp'; 'error' is None. On failure 'data' is None and 'error'
+        is a message.
+    """
     result = await _get_players()
     players_map = result["data"]
     if players_map is None:
@@ -254,6 +277,17 @@ async def get_injured_players(
 
 @tool 
 async def find_player(name: str) -> PlayersListResult:
+    """Search NFL players by name (case-insensitive, partial match).
+
+    Exact name matches are listed first. Names can be ambiguous, so check
+    team and position to pick the right player.
+
+    Args:
+        name: Full or partial player name, e.g. 'Ja'Marr Chase' or 'chase'.
+
+    Returns:
+        Same shape as get_injured_players.
+    """
     normalized_name = _normalize_name(name)
     if not normalized_name:
         return {"data": None, "error": "invalid name, must contain letters only"}
@@ -278,7 +312,17 @@ async def get_trending_players(
     lookback_hours: int = 24
     # Add player limit parameter?
 ) -> TrendingResult:
-    
+    """Get players most added or dropped across Sleeper fantasy leagues.
+
+    Args:
+        trend_type: 'add' or 'drop'.
+        lookback_hours: How far back to count, in hours (default 24, max 168).
+
+    Returns:
+        dict with 'data' and 'error'. On success 'data' is a list of dicts
+        with 'player' (player details, or None if unknown), 'player_id' (str)
+        and 'count' (int, number of adds or drops). Data from Sleeper.
+    """
     if trend_type not in ("add", "drop"):
         return {"data": None, "error": "trend_type must be 'add' or 'drop'"}
     # Set maximum hours to look back to a week
