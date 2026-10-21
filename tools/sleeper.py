@@ -1,4 +1,4 @@
-from typing import TypedDict, NotRequired, Any
+from typing import TypedDict, NotRequired, Any, Literal
 import httpx
 import time
 import asyncio
@@ -68,10 +68,23 @@ class PlayersResult(TypedDict):
     data: dict[str, ParsedPlayer] | None
     error: str | None
 
+class PlayersListResult(TypedDict):
+    data: list[ParsedPlayer] | None
+    error: str | None
+ 
 # If ParsedPlayer shape changes, need to delete the cache file so the old format is not used
 class PlayersCache(TypedDict):
     fetched_at: float
     data: dict[str, ParsedPlayer] | None
+
+class TrendingPlayer(TypedDict):
+    player: ParsedPlayer | None
+    player_id: str
+    count: int
+
+class TrendingResult(TypedDict):
+    data: list[TrendingPlayer] | None
+    error: str | None
 
 # --------------------------------------------------------
 # Cache
@@ -226,4 +239,74 @@ async def get_nfl_state() -> RawResult:
     return await _get("state/nfl")
 
 @tool
-async def get_injured_players() -> PlayersResult:
+async def get_injured_players(
+    team: str | None = None,
+    position: str | None = None
+) -> PlayersListResult:
+
+    
+    result = await _get_players()
+    players_map = result["data"]
+    if players_map is None:
+        return {"data": None, "error": result["error"]}
+    players = _filter_players(players_map, team, position, True)
+    return {"data": players, "error": None}
+
+@tool 
+async def find_player(name: str) -> PlayersListResult:
+    normalized_name = _normalize_name(name)
+    if not normalized_name:
+        return {"data": None, "error": "invalid name, must contain letters only"}
+
+    result = await _get_players()
+    players_map = result["data"]
+    if players_map is None:
+        return {"data": None, "error": result["error"]}
+
+    exact_matches: list[ParsedPlayer] = []
+    partial_matches: list[ParsedPlayer] = []
+    for player in players_map.values():
+        if player["search_name"] == normalized_name:
+            exact_matches.append(player)
+        elif normalized_name in player["search_name"]:
+            partial_matches.append(player)
+    return {"data": (exact_matches + partial_matches), "error": None}
+
+@tool
+async def get_trending_players(
+    trend_type: Literal["add", "drop"] = "add",
+    lookback_hours: int = 24
+    # Add player limit parameter?
+) -> TrendingResult:
+    
+    if trend_type not in ("add", "drop"):
+        return {"data": None, "error": "trend_type must be 'add' or 'drop'"}
+    # Set maximum hours to look back to a week
+    lookback_hours = max(1, min(lookback_hours, 168))
+
+    trending = await _get(
+        f"players/nfl/trending/{trend_type}",
+        params={"lookback_hours": lookback_hours}             
+    )
+    if trending["error"] is not None:
+        return {"data": None, "error": trending["error"]}
+    if not isinstance(trending["data"], list):
+        return {"data": None, "error": "Unexpected trending player response shape"}
+
+    all_players = await _get_players()
+    players_map = all_players["data"]
+    if players_map is None:
+        return {"data": None, "error": all_players["error"]}
+
+    trending_players: list[TrendingPlayer] = []
+    # Trending endpoint only returns player id so must cross check with full player list to retrieve the player details
+    for item in trending["data"]:
+        player_id = str(item.get("player_id", ""))
+        trending_players.append(
+            {
+                "player": players_map.get(player_id),
+                "player_id": player_id,
+                "count": int(item.get("count", 0))
+            }
+        )
+    return {"data": trending_players, "error": None}
