@@ -17,17 +17,13 @@ _players_lock = asyncio.Lock()
 BASE_URL = "https://api.sleeper.app/v1"
 # 6 hour cache TTL to avoid calling players endpoint too frequently, recommended once a day
 # but need more frequent updates for injuries
-PLAYERS_TTL_SECONDS = 6 * 60 * 60 
+PLAYERS_TTL_SECONDS = 6 * 60 * 60
 # Disk cache so the cache will survive restarts
 PLAYERS_CACHE_FILE = Path(".cache/sleeper_players.json")
 
 # --------------------------------------------------------
 # Types
 # --------------------------------------------------------
-
-# class SleeperResult(TypedDict):
-#     data: list[dict] | None
-#     error: str | None
 
 class RawResult(TypedDict):
     data: Any
@@ -109,10 +105,11 @@ def _read_disk_cache() -> PlayersCache | None:
             return None
         return {"fetched_at": float(payload["fetched_at"]), "data": payload["data"]}
     except FileNotFoundError:
-        pass # Will occur in the first run where cache isn't set yet
+        return None # Will occur in the first run where cache isn't set yet
     except (OSError, ValueError, TypeError, KeyError) as e:
     # ValueError will cover invalid JSON or wrong encoding
         logger.warning("Unreadable disk cache: %s", type(e).__name__)
+        return None
 
 def _save_disk_cache() -> None:
     try:
